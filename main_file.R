@@ -4,11 +4,10 @@ library(purrr)
 library(glmnet)
 library(caret)
 library(bnlearn)
-library(rsample)
-library(parallel)
 library(tidyr)
-library(doMC)
 library(ggplot2)
+library(RColorBrewer)
+library(cowplot)
 
 set.seed(15052025)
 
@@ -26,26 +25,22 @@ train <- train %>%
   select(!X258) %>% 
   rename_with(~ new_colnames, everything()) %>% 
   mutate(across("label", .fns = ~as.factor(.))) %>% 
-  mutate(across(.cols = !all_of("label"), .fns = ~(.+1)/2)) %>% 
-  mutate(across(.cols = !all_of("label"), .fns = ~cut.default(., 
-                                                              breaks = seq(0, 1, 1/n_levels),
-                                                              labels = 0:(n_levels-1),
-                                                              ordered_result = FALSE,
+  mutate(across(.cols = !all_of("label"), .fns = ~cut.default(.,
+                                                              breaks = seq(-1, 1, 2/n_levels),
+                                                              ordered_result = TRUE,
                                                               include.lowest = TRUE,
                                                               right = TRUE
-                                                              ))) %>% 
+                                                              ))) %>%
   as.data.frame()
 
 test <- test %>% 
   rename_with(~ new_colnames, everything()) %>% 
   mutate(across("label", .fns = ~as.factor(.))) %>% 
-  mutate(across(.cols = !all_of("label"), .fns = ~(.+1)/2)) %>% 
   mutate(across(.cols = !all_of("label"), .fns = ~cut.default(.,
-                                                              breaks = seq(0, 1, 1/n_levels), 
-                                                              labels = 0:(n_levels-1),
-                                                              ordered_result = FALSE,
+                                                              breaks = seq(-1, 1, 2/n_levels),
+                                                              ordered_result = TRUE,
                                                               include.lowest = TRUE,
-                                                              right = TRUE))) %>% 
+                                                              right = TRUE))) %>%
   as.data.frame()
 
 cat("Main data retrival and preprocessing:")
@@ -74,6 +69,7 @@ cat("Tree-Augmented Naive Bayes:")
 Sys.time() - time_start
 
 # Logistic regression with no interaction, lasso penalty
+set.seed(150525)
 time_start <- Sys.time()
 x_train <- model.matrix(label ~ ., train)[, -1]
 y_train <- as.numeric(as.character(train$label))
@@ -206,34 +202,48 @@ run_models <- function(train, test, logit_cv, logit_TANinter_cv, verbose = FALSE
   train$label <- as.factor(train$label)
   test$label <- as.factor(test$label)
   
+  model_times <- numeric(4)
+  
   if (verbose) message("Running Naive Bayes...")
-  nb_results <- run_naive_bayes(train, test)
+  t_nb <- system.time({
+    nb_results <- run_naive_bayes(train, test)
+  })
+  model_times[1] <- t_nb["elapsed"]
   
   if (verbose) message("Running TAN...")
-  tan_results <- run_tan(train, test)
+  t_tan <- system.time({
+    tan_results <- run_tan(train, test)
+  })
+  model_times[2] <- t_tan["elapsed"]
   
   if (verbose) message("Running Logistic Regression...")
-  logit_results <- run_logistic(train, test, logit_cv)
+  t_logit <- system.time({
+    logit_results <- run_logistic(train, test, logit_cv)
+  })
+  model_times[3] <- t_logit["elapsed"]
   
   if (verbose) message("Running Logistic TAN...")
-  logit_tan_results <- run_logistic_tan(train, test, tan_results$structure, logit_TANinter_cv)
+  t_tan_logit <- system.time({
+    logit_tan_results <- run_logistic_tan(train, test, tan_results$structure, logit_TANinter_cv)
+  })
+  model_times[4] <- t_tan_logit["elapsed"]
   
-  # Combine results
   acc_all <- c(nb_results$acc, tan_results$acc, logit_results$acc, logit_tan_results$acc)
   class_all <- c(nb_results$class, tan_results$class, logit_results$class, logit_tan_results$class)
   
-  return(data.frame(
+  return(list(
     acc = acc_all,
-    class = class_all
+    class = class_all,
+    time = model_times
   ))
 }
 
 
 set.seed(15052025)
 
-sample_sizes <- round(10^(seq(1.5, 4, 0.1)))
+sample_sizes <- round(10^(seq(1.5, 4, 0.25)))
 sample_sizes <- sample_sizes[sample_sizes <= nrow(train)]
-n_repeats <- 100
+n_repeats <- 10
 
 results_list <- vector("list", length(sample_sizes) * n_repeats)
 class_results_list <- vector("list", length(sample_sizes) * n_repeats)
@@ -253,12 +263,14 @@ for (size in sample_sizes) {
       )
     acc_values <- from_func[["acc"]]
     class_values <- from_func[["class"]]
+    time_values <- from_func[["time"]]
     
     results_list[[counter]] <- data.frame(
       Model = c("NB", "TAN", "Logistic", "Logistic TAN"),
       Size = size,
       Repeat = r,
-      Accuracy = acc_values
+      Accuracy = acc_values,
+      Time = time_values
     )
     
     class_results_list[[counter]] <- data.frame(
@@ -274,93 +286,122 @@ for (size in sample_sizes) {
   }
 }
 
-# Combine results into data frames
 results <- do.call(rbind, results_list)
 class_results <- do.call(rbind, class_results_list)
 
 print(results)
 print(Sys.time() - time_start)
 
+# Plot convergence accuracy
+# pdf("learning_curve.pdf")
 
-results <- read_csv("log_results.csv")
-class_results <- read_csv("log_class_results.csv")
+results$LogSize <- log10(results$Size)
 
-# Plot convergence
-
-results_summary <- results %>%
-  group_by(Model, Size) %>%
-  summarise(
-    Avg_Accuracy = mean(Accuracy),
-    SD = sd(Accuracy),
-    SE = SD / sqrt(n()),
-    .groups = "drop"
-  )
-
-ggplot(
-  results_summary, 
-  aes(
-    x = Size,
-    y = Avg_Accuracy,
-    color = Model,
-    group = Model
-  )
-) +
-  geom_line(linewidth = 0.75) +   
-  geom_point(size = 1.5) +  
-  geom_errorbar(
-    aes(
-      ymin = Avg_Accuracy - SE, 
-      ymax = Avg_Accuracy + SE, 
-      width = 0.05
+ggplot(results, aes(x = LogSize, y = Accuracy, color = Model)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(fun = mean, geom = "point", size = 1.25) +
+  scale_x_continuous(
+    breaks = seq(1, 4, 0.5),
+    labels = scales::math_format(10^.x)
+  ) +
+  scale_y_continuous(
+    breaks = seq(0.3, 1, 0.05)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Logistic" = "#D73027",
+      "Logistic TAN" = "#67001F",
+      "NB" = "#1F78B4",
+      "TAN" = "#08457E"
     )
   ) +
-  scale_x_log10(
-    breaks = c(10^(seq(1, 4, 0.5))),
-    labels = scales::trans_format("log10", scales::math_format(10^.x))
-  ) +
-  scale_y_continuous(limits = c(0.3, 1), breaks = seq(0.3, 1, 0.05)) +
-  theme_minimal() +   
   labs(
-    x = "n",
-    y = "Average Accuracy with SE",
+    x = expression(m),
+    y = "Average Accuracy",
     color = "Model"
   ) +
+  theme_minimal(base_size = 13) +
   theme(legend.position = "top")
+
+# dev.off()
+
+# Plot time
+pdf("runtime_curve.pdf")
+
+results$LogSize <- log10(results$Size)
+
+ggplot(results, aes(x = LogSize, y = Time, color = Model)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(fun = mean, geom = "point", size = 1.25) +
+  scale_x_continuous(
+    breaks = seq(1, 4, 0.5),
+    labels = scales::math_format(10^.x)
+  ) +
+  scale_y_continuous(
+    trans = "log10",
+    # breaks = seq(0, 26, 2),
+    # labels = scales::math_format(10^.x)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Logistic" = "#D73027",
+      "Logistic TAN" = "#67001F",
+      "NB" = "#1F78B4",
+      "TAN" = "#08457E"
+    )
+  ) +
+  labs(
+    x = "Sample size (m)",
+    y = "Average Time (s)",
+    color = "Model"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "top")
+
+dev.off()
 
 # Plot class convergence for digits
 
-class_results_summary <- class_results %>%
-  group_by(Model, Class, Size) %>%
-  summarise(
-    Avg_Accuracy = mean(class),
-    SD = sd(class),
-    SE = SD / sqrt(n()),
-    .groups = "drop"
-  )
+class_results$LogSize <- log10(class_results$Size)
 
-c_results <- class_results_summary %>%
+cclass_results <- class_results %>%
   mutate(
-    Fold = as.numeric(Size),
-    Class = as.factor(Class)
+    Class = as.factor(Class),
+    LineType = ifelse(as.numeric(as.character(Class)) %% 2 == 0, "even", "odd")
   )
 
-results_clean <- c_results %>%
-  filter(!is.na(Avg_Accuracy))
+# pdf("class_accuracy_curve.pdf")
 
-ggplot(results_clean, aes(x = Size, y = Avg_Accuracy, color = Class, group = Class)) +
-  geom_line(size = 1) +
-  geom_point(size = 2) +
-  geom_errorbar(aes(ymin = Avg_Accuracy - SE, ymax = Avg_Accuracy + SE), width = 0.2) +
-  facet_wrap(~ Model, ncol = 2) +
-  theme_minimal() +
-  labs(
-    title = "Per-Class Accuracy Over Folds",
-    x = "Fold",
-    y = "Average Accuracy with SE",
-    color = "Class"
+# Set class color palette
+class_palette <- brewer.pal(10, "Paired")
+
+ggplot(cclass_results, aes(x = LogSize, y = Accuracy, color = Class, linetype = LineType)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.7) +
+  stat_summary(fun = mean, geom = "point", size = 0.7) +
+  scale_color_manual(values = class_palette) +
+  scale_linetype_manual(values = c("even" = "solid", "odd" = "twodash")) +
+  scale_x_continuous(
+    breaks = seq(1, 4, 0.5),
+    labels = scales::math_format(10^.x)
   ) +
-  theme(legend.position = "bottom")
+  scale_y_continuous(limits = c(0.2, 1), breaks = seq(0.2, 1, 0.1)) +
+  facet_wrap(~ Model, ncol = 2) +
+  labs(
+    title = "Per-Class Accuracy by Sample Size",
+    x = expression(m),
+    y = "Average Class Accuracy",
+    color = "Class",
+    linetype = "Parity"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "right",
+    strip.text = element_text(face = "bold")
+  )
 
+# dev.off()
+
+# Digit plotting
 
 plot_digit_gg <- function(vec, pix = 16) {
   mat <- matrix(vec, nrow = pix, byrow = TRUE)
@@ -377,10 +418,10 @@ plot_digit_gg <- function(vec, pix = 16) {
 }
 
 set.seed(150525)
-
-x <- rbn(TAN_model, 2007)
+pdf("Data_example_with_discritization.pdf")
+# x <- rbn(TAN_model, 2007)
 # x <- rbn(nb_model, 2007)
-# x <- test
+x <- train
 full_list <- list(c())
 for (j in 0:9) {
   y <- x %>% 
@@ -396,3 +437,58 @@ for (j in 0:9) {
 }
 
 plot_grid(plotlist = full_list[-1], nrow = 10)
+dev.off()
+
+
+# Function to plot a digit image
+plot_digit_gg <- function(vec, pix = 16) {
+  mat <- matrix(vec, nrow = pix, byrow = TRUE)
+  df <- as.data.frame(as.table(mat))
+  colnames(df) <- c("y", "x", "value")
+  
+  ggplot(df, aes(x = as.numeric(x), y = as.numeric(y), fill = value)) +
+    geom_tile() +
+    scale_fill_gradient(low = "white", high = "black") +
+    coord_fixed() +
+    theme_void() +
+    theme(legend.position = "none") +
+    scale_y_reverse()
+}
+
+generate_digit_plots <- function(data) {
+  plot_list <- list()
+  
+  for (digit in 0:9) {
+    digit_data <- data %>% filter(label == digit)
+    
+    avg_image <- digit_data %>%
+      mutate_all(as.numeric) %>%
+      summarise_all(mean) %>%
+      select(-label) %>%
+      as.numeric()
+    
+    mean_plot <- plot_digit_gg(avg_image)
+    
+    example_plots <- lapply(1:10, function(i) {
+      plot_digit_gg(as.numeric(digit_data[i, -1]))
+    })
+    
+    plot_list <- c(plot_list, list(mean_plot), example_plots)
+  }
+  return(plot_list)
+}
+
+save_digit_grid <- function(data, filename = "digit_grid.pdf", seed = 150525) {
+  set.seed(seed)
+  plot_list <- generate_digit_plots(data)
+  pdf(filename)
+  plot_grid(plotlist = plot_list, nrow = 10)
+  # dev.off()
+}
+
+save_digit_grid(test, "test_digits.pdf")
+dev.off()
+save_digit_grid(rbn(nb_model, 2007), "nb_generated_digits.pdf")
+dev.off()
+save_digit_grid(rbn(TAN_model, 2007), "tan_generated_digits.pdf")
+dev.off()
