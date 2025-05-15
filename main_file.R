@@ -241,9 +241,9 @@ run_models <- function(train, test, logit_cv, logit_TANinter_cv, verbose = FALSE
 
 set.seed(15052025)
 
-sample_sizes <- round(10^(seq(1.5, 4, 0.25)))
+sample_sizes <- round(10^(seq(1.5, 4, 0.1)))
 sample_sizes <- sample_sizes[sample_sizes <= nrow(train)]
-n_repeats <- 10
+n_repeats <- 100
 
 results_list <- vector("list", length(sample_sizes) * n_repeats)
 class_results_list <- vector("list", length(sample_sizes) * n_repeats)
@@ -292,6 +292,9 @@ class_results <- do.call(rbind, class_results_list)
 print(results)
 print(Sys.time() - time_start)
 
+write_csv(results, "results.csv")
+write_csv(class_results, "class_results.csv")
+
 # Plot convergence accuracy
 # pdf("learning_curve.pdf")
 
@@ -316,7 +319,7 @@ ggplot(results, aes(x = LogSize, y = Accuracy, color = Model)) +
     )
   ) +
   labs(
-    x = expression(m),
+    x = "Sample size",
     y = "Average Accuracy",
     color = "Model"
   ) +
@@ -351,7 +354,7 @@ ggplot(results, aes(x = LogSize, y = Time, color = Model)) +
     )
   ) +
   labs(
-    x = "Sample size (m)",
+    x = "Sample size",
     y = "Average Time (s)",
     color = "Model"
   ) +
@@ -388,7 +391,7 @@ ggplot(cclass_results, aes(x = LogSize, y = Accuracy, color = Class, linetype = 
   facet_wrap(~ Model, ncol = 2) +
   labs(
     title = "Per-Class Accuracy by Sample Size",
-    x = expression(m),
+    x = "Sample size",
     y = "Average Class Accuracy",
     color = "Class",
     linetype = "Parity"

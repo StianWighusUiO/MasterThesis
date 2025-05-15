@@ -44,65 +44,105 @@ compute_entropy <- function(probs) {
 
 results_list <- list()
 
-# 1. Naive Bayes
+logsumexp <- function(log_probs) {
+  max_log <- max(log_probs)
+  max_log + log(sum(exp(log_probs - max_log)))
+}
+
+# Naive Bayes
 nb_structure <- naive.bayes(train_ood, "label")
 nb_model <- bn.fit(nb_structure, train_ood, method = "bayes")
 nb_preds <- predict(nb_model, test, prob = TRUE)
-nb_probs <- attr(nb_preds, "prob")
+
+
+y <- factor((0:9)[-6], (0:9)[-6])
+
+nb_logLik <- lapply(1:2007, function(i) {
+  lapply(y, function(j) {
+    x <- data.frame(label = j, test[i, -1])
+    names(x) <- names(test)
+    logLik(nb_model, x)
+  })
+})
+nb_probs <- sapply(nb_logLik, function(i) {
+  logsumexp(unlist(i))
+})
+
+nb_posteriors <- attr(nb_preds, "prob")
+nb_entropy <- apply(nb_posteriors, 2, compute_entropy)
+
 
 results_list[["nb"]] <- data.frame(
   model = "nb",
   true_label = test$label,
   predicted_label = nb_preds,
-  max_prob = apply(nb_probs, 2, max),
-  entropy = apply(nb_probs, 2, compute_entropy),
+  log_prob = nb_probs,
+  entropy = nb_entropy,
   is_ood = test$label == excluded_digit
 )
 
 cat("Naive Bayes done\n")
 
-# 2. TAN
+# TAN
 tan_structure <- tree.bayes(train_ood, "label")
 tan_model <- bn.fit(tan_structure, train_ood, method = "bayes")
 tan_preds <- predict(tan_model, test, prob = TRUE)
-tan_probs <- attr(tan_preds, "prob")
+
+y <- factor((0:9)[-6], (0:9)[-6])
+
+tan_logLik <- lapply(1:2007, function(i) {
+  lapply(y, function(j) {
+    x <- data.frame(label = j, test[i, -1])
+    names(x) <- names(test)
+    logLik(tan_model, x)
+  })
+})
+tan_probs <- sapply(tan_logLik, function(i) {
+  logsumexp(unlist(i))
+})
+
+tan_posteriors <- attr(tan_preds, "prob")
+tan_entropy <- apply(tan_posteriors, 2, compute_entropy)
+
+
 
 results_list[["tan"]] <- data.frame(
   model = "tan",
   true_label = test$label,
   predicted_label = tan_preds,
-  max_prob = apply(tan_probs, 2, max),
-  entropy = apply(tan_probs, 2, compute_entropy),
+  log_prob = tan_probs,
+  entropy = tan_entropy,
   is_ood = test$label == excluded_digit
 )
 
 cat("TAN done\n")
 
-# === Prepare logistic regression data ===
 x_train <- model.matrix(label ~ ., train_ood)[, -1]
 y_train <- as.numeric(as.character(train_ood$label))
 
 x_test <- model.matrix(label ~ ., test)[, -1]
 y_test <- as.numeric(as.character(test$label))
 
-# 3. Logistic Regression
+# Logistic Regression
 logit_cv <- cv.glmnet(x_train, y_train, family = "multinomial", alpha = 1)
 
 logit_probs <- predict(logit_cv$glmnet.fit, newx = x_test, s = logit_cv$lambda.1se, type = "response")[,,1]
 logit_preds <- colnames(logit_probs)[apply(logit_probs, 1, which.max)]
 
+
+
 results_list[["logreg"]] <- data.frame(
   model = "logreg",
   true_label = test$label,
   predicted_label = logit_preds,
-  max_prob = apply(logit_probs, 2, max),
-  entropy = apply(logit_probs, 2, compute_entropy),
+  log_prob = log(apply(logit_probs, 1, max)),
+  entropy = apply(logit_probs, 1, compute_entropy),
   is_ood = test$label == excluded_digit
 )
 
 cat("Logistic regression done\n")
 
-# 4. Logistic Regression with TAN interactions
+# Logistic Regression with TAN interactions
 interactions <- as.data.frame(tan_structure$arcs) %>%
   filter(from != "label" & to != "label") %>%
   transmute(term = paste0(from, ":", to)) %>%
@@ -124,8 +164,8 @@ results_list[["logreg_tan"]] <- data.frame(
   model = "logreg_tan",
   true_label = test$label,
   predicted_label = logit_tan_preds,
-  max_prob = apply(logit_tan_probs, 2, max),
-  entropy = apply(logit_tan_probs, 2, compute_entropy),
+  log_prob = log(apply(logit_tan_probs, 1, max)),
+  entropy = apply(logit_tan_probs, 1, compute_entropy),
   is_ood = test$label == excluded_digit
 )
 
@@ -145,60 +185,61 @@ df <- df %>%
                    labels = c("Naive Bayes", "TAN", "LogReg", "LogReg+TAN"))
   )
 
-# --- Confidence Histogram ---
-ggplot(df, aes(x = max_prob, fill = is_ood)) +
-  geom_histogram(binwidth = 0.05, alpha = 0.7, position = "identity") +
+# Separate generative and discriminative models
+generative_df <- df %>% filter(model %in% c("Naive Bayes", "TAN"))
+discriminative_df <- df %>% filter(model %in% c("LogReg", "LogReg+TAN")) %>% mutate(prob = exp(log_prob), .keep = "unused")
+
+# === Plot: Generative models (using log P(x)) ===
+ggplot(generative_df, aes(x = log_prob, after_stat(density), fill = is_ood)) +
+  geom_histogram(, alpha = 0.7, position = "identity", bins = 40) +
   facet_wrap(~ model, ncol = 2) +
   scale_fill_manual(values = c("Seen" = "#0072B2", "OOD" = "#D55E00")) +
   labs(
-    title = "Prediction Confidence: Seen vs. OOD",
-    x = "Max Predicted Probability",
-    y = "Count",
+    title = "Generative Models: log P(x) ??? Seen vs. OOD",
+    x = "log P(x)",
+    y = "Density",
     fill = "Sample"
   ) +
   theme_minimal(base_size = 13)
-ggsave("confidence_histogram.pdf", width = 8, height = 5)
+ggsave("generative_logpx_histogram.pdf", width = 8, height = 5)
+
+
+# === Plot: Discriminative models (using max P(y|x)) ===
+ggplot(discriminative_df, aes(x = prob, after_stat(density), fill = is_ood)) +
+  geom_histogram(alpha = 0.7, position = "identity", bins = 30) +
+  facet_wrap(~ model, ncol = 2) +
+  scale_fill_manual(values = c("Seen" = "#0072B2", "OOD" = "#D55E00")) +
+  labs(
+    title = "Discriminative Models: max P(y|x) ??? Seen vs. OOD",
+    x = "max P(y | x)",
+    y = "Density",
+    fill = "Sample"
+  ) +
+  theme_minimal(base_size = 13)
+ggsave("discriminative_p_histogram.pdf", width = 8, height = 5)
+
 
 # --- Entropy Boxplot ---
-ggplot(df, aes(x = model, y = entropy, fill = is_ood)) +
+ggplot(generative_df, aes(x = model, y = entropy, fill = is_ood)) +
   geom_boxplot(alpha = 0.8, outlier.size = 0.5) +
   scale_fill_manual(values = c("Seen" = "#0072B2", "OOD" = "#D55E00")) +
   labs(
-    title = "Entropy by Model and Sample Type",
+    title = "Entropy (Generative Models)",
     x = "Model",
     y = "Entropy",
     fill = "Sample"
   ) +
   theme_minimal(base_size = 13)
-ggsave("entropy_boxplot.pdf", width = 8, height = 5)
+ggsave("generative_entropy_boxplot.pdf", width = 8, height = 5)
 
-# --- Rejection Curve ---
-compute_rejection_curve <- function(df_model) {
-  df_model %>%
-    arrange(desc(max_prob)) %>%
-    mutate(
-      rank = row_number(),
-      coverage = rank / n(),
-      correct = predicted_label == true_label
-    ) %>%
-    group_by(coverage = round(coverage, 2)) %>%
-    summarise(acc = mean(correct), .groups = "drop") %>%
-    mutate(model = unique(df_model$model))
-}
-
-rejection_data <- df %>%
-  filter(is_ood == "Seen") %>%
-  group_split(model) %>%
-  map_dfr(compute_rejection_curve)
-
-ggplot(rejection_data, aes(x = coverage, y = acc, color = model)) +
-  geom_line(linewidth = 1) +
-  scale_color_brewer(palette = "Set1") +
+ggplot(discriminative_df, aes(x = model, y = entropy, fill = is_ood)) +
+  geom_boxplot(alpha = 0.8, outlier.size = 0.5) +
+  scale_fill_manual(values = c("Seen" = "#0072B2", "OOD" = "#D55E00")) +
   labs(
-    title = "Accuracy vs. Coverage (Seen Only)",
-    x = "Coverage (Top Confidence)",
-    y = "Accuracy",
-    color = "Model"
+    title = "Entropy (Discriminative Models)",
+    x = "Model",
+    y = "Entropy",
+    fill = "Sample"
   ) +
   theme_minimal(base_size = 13)
-ggsave("rejection_curve.pdf", width = 8, height = 5)
+ggsave("discriminative_entropy_boxplot.pdf", width = 8, height = 5)
