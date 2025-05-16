@@ -210,8 +210,8 @@ ggplot(discriminative_df, aes(x = prob, after_stat(density), fill = is_ood)) +
   facet_wrap(~ model, ncol = 2) +
   scale_fill_manual(values = c("Seen" = "#0072B2", "OOD" = "#D55E00")) +
   labs(
-    title = "Discriminative Models: max P(y|x) ??? Seen vs. OOD",
-    x = "max P(y | x)",
+    title = "Discriminative Models: max P(C|x) ??? Seen vs. OOD",
+    x = "max P(C | x)",
     y = "Density",
     fill = "Sample"
   ) +

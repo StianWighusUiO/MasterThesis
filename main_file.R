@@ -292,12 +292,12 @@ class_results <- do.call(rbind, class_results_list)
 print(results)
 print(Sys.time() - time_start)
 
-write_csv(results, "results.csv")
-write_csv(class_results, "class_results.csv")
+# write_csv(results, "results.csv")
+# write_csv(class_results, "class_results.csv")
+results <- read_csv("results.csv")
+class_results <- read_csv("class_results.csv")
 
 # Plot convergence accuracy
-# pdf("learning_curve.pdf")
-
 results$LogSize <- log10(results$Size)
 
 ggplot(results, aes(x = LogSize, y = Accuracy, color = Model)) +
@@ -325,11 +325,9 @@ ggplot(results, aes(x = LogSize, y = Accuracy, color = Model)) +
   ) +
   theme_minimal(base_size = 13) +
   theme(legend.position = "top")
-
-# dev.off()
+ggsave("learning_curve.pdf")
 
 # Plot time
-pdf("runtime_curve.pdf")
 
 results$LogSize <- log10(results$Size)
 
@@ -360,8 +358,7 @@ ggplot(results, aes(x = LogSize, y = Time, color = Model)) +
   ) +
   theme_minimal(base_size = 13) +
   theme(legend.position = "top")
-
-dev.off()
+ggsave("runtime_curve.pdf")
 
 # Plot class convergence for digits
 
@@ -373,7 +370,6 @@ cclass_results <- class_results %>%
     LineType = ifelse(as.numeric(as.character(Class)) %% 2 == 0, "even", "odd")
   )
 
-# pdf("class_accuracy_curve.pdf")
 
 # Set class color palette
 class_palette <- brewer.pal(10, "Paired")
@@ -401,8 +397,7 @@ ggplot(cclass_results, aes(x = LogSize, y = Accuracy, color = Class, linetype = 
     legend.position = "right",
     strip.text = element_text(face = "bold")
   )
-
-# dev.off()
+ggsave("class_accuracy_curve.pdf")
 
 # Digit plotting
 
